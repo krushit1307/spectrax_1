@@ -5,19 +5,6 @@ import {
   FeedbackResult,
 } from "../engine/feedbackEngine";
 
-const ENGINE_DEFAULTS = {
-  repCooldown: 600,
-  hysteresis: 10,
-  smoothingWindow: 8,
-  minDownDuration: 150,
-  correctRepMinScore: 70,
-  streakMinScore: 80,
-};
-
-const layoutParser = {
-  get: (key: string) => null as any,
-};
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Plank Spline Types & Constants
 // ─────────────────────────────────────────────────────────────────────────────
@@ -237,6 +224,42 @@ export interface EngineState {
   visibilityBuffer?: number[];
   lastValidAngles?: Record<string, number>;
   trackingLostFrames?: number;
+
+  // 🔥 Static hold time tracking
+  holdTime?: number;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Layout Parser & Defaults
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface RepParams {
+  repCooldown: number;
+  hysteresis: number;
+  smoothingWindow: number;
+  minDownDuration: number;
+  correctRepMinScore: number;
+  streakMinScore: number;
+}
+
+const ENGINE_DEFAULTS: RepParams = {
+  repCooldown: 600,
+  hysteresis: 10,
+  smoothingWindow: 8,
+  minDownDuration: 150,
+  correctRepMinScore: 70,
+  streakMinScore: 80,
+};
+
+// Per-exercise overrides (runtime register-able)
+const layoutOverrides = new Map<string, Partial<RepParams>>();
+
+export function setRepParams(key: string, params: Partial<RepParams>): void {
+  layoutOverrides.set(key, params);
+}
+
+export function clearRepParams(key: string): void {
+  layoutOverrides.delete(key);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -244,22 +267,17 @@ export interface EngineState {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export class ExerciseEngine {
-  private readonly REP_COOLDOWN = 600;
-  private readonly HYSTERESIS = 10;
-  private readonly SMOOTHING_WINDOW = 8;
-  private readonly MIN_DOWN_DURATION = 150;
-  // Pull rep-counter params from a registered layout, falling back to defaults.
-  // Called per-frame so runtime layout changes take effect immediately.
-  private repParams(key: string) {
-    const custom = layoutParser.get(key);
+  // Pull rep-counter params from registered overrides or fall back to defaults.
+  private repParams(key: string): RepParams {
+    const custom = layoutOverrides.get(key);
     if (!custom) return ENGINE_DEFAULTS;
     return {
-      repCooldown:        custom.repCooldown,
-      hysteresis:         custom.hysteresis,
-      smoothingWindow:    custom.smoothingWindow,
-      minDownDuration:    custom.minDownDuration,
-      correctRepMinScore: custom.correctRepMinScore,
-      streakMinScore:     custom.streakMinScore,
+      repCooldown:        custom.repCooldown        ?? ENGINE_DEFAULTS.repCooldown,
+      hysteresis:         custom.hysteresis         ?? ENGINE_DEFAULTS.hysteresis,
+      smoothingWindow:    custom.smoothingWindow    ?? ENGINE_DEFAULTS.smoothingWindow,
+      minDownDuration:    custom.minDownDuration    ?? ENGINE_DEFAULTS.minDownDuration,
+      correctRepMinScore: custom.correctRepMinScore ?? ENGINE_DEFAULTS.correctRepMinScore,
+      streakMinScore:     custom.streakMinScore     ?? ENGINE_DEFAULTS.streakMinScore,
     };
   }
 
@@ -268,6 +286,13 @@ export class ExerciseEngine {
     config: ExerciseConfig,
     stage: "up" | "down",
   ): boolean {
+    if (config.isStatic) {
+      // For static hold exercises, check if angle is within the acceptable hold range
+      const lastAngle = history[history.length - 1];
+      if (lastAngle >= config.downThreshold - 15) return true;
+      return false;
+    }
+
     if (stage === "down") return true;
 
     const firstAngle = history[0];
@@ -293,6 +318,7 @@ export class ExerciseEngine {
     const now = Date.now();
     const p = this.repParams(config.key);
 
+
     const { reps, lastRepTime, history } = currentState;
     let { stage, isCalibrated, stageStartTime } = currentState;
 
@@ -300,9 +326,11 @@ export class ExerciseEngine {
 
     // ───────── ADAPTIVE VISIBILITY & RECOVERY ─────────
     const prevVisibilityBuffer = currentState.visibilityBuffer || [];
+
     const newVisibilityBuffer = [...prevVisibilityBuffer, currentVisibility].slice(-p.smoothingWindow);
     const avgVisibility = newVisibilityBuffer.reduce((a, b) => a + b, 0) / newVisibilityBuffer.length;
     
+
     let nextTrackingLostFrames = currentState.trackingLostFrames || 0;
     let nextLastValidAngles = currentState.lastValidAngles || angles;
 
@@ -315,7 +343,10 @@ export class ExerciseEngine {
     }
 
     // Temporal buffering: use last known valid angles if tracking drops momentarily (up to 10 frames)
-    const activeAngles = (nextTrackingLostFrames > 0 && nextTrackingLostFrames < 10) ? nextLastValidAngles : angles;
+    const activeAngles =
+      nextTrackingLostFrames > 0 && nextTrackingLostFrames < 10
+        ? nextLastValidAngles
+        : angles;
     const rawAngle = activeAngles[config.primaryJoint];
 
     // Only block exercise if visibility is consistently low for several frames
@@ -327,7 +358,7 @@ export class ExerciseEngine {
         isInExercisePosture: false,
         visibilityBuffer: newVisibilityBuffer,
         trackingLostFrames: nextTrackingLostFrames,
-        lastValidAngles: nextLastValidAngles
+        lastValidAngles: nextLastValidAngles,
       };
     }
 
@@ -346,7 +377,7 @@ export class ExerciseEngine {
 
       if (
         (shouldCalibrateFromDown || shouldCalibrateFromUp) &&
-        newHistory.length >= this.SMOOTHING_WINDOW
+        newHistory.length >= p.smoothingWindow
       ) {
         isCalibrated = true;
         stage = fromDown ? "down" : "up";
@@ -365,7 +396,7 @@ export class ExerciseEngine {
         isInExercisePosture: false,
         visibilityBuffer: newVisibilityBuffer,
         trackingLostFrames: nextTrackingLostFrames,
-        lastValidAngles: nextLastValidAngles
+        lastValidAngles: nextLastValidAngles,
       };
     }
 
@@ -448,6 +479,19 @@ export class ExerciseEngine {
     }
 
     const isInExercisePosture = this.isValidExercisePosture(history, config, nextStage);
+    
+    // Accumulate hold time for static exercises (1/FPS approximately, or based on time diff)
+    // Since process is called roughly FPS times per second, we can estimate hold time.
+    // However, the cleanest way is to use a timestamp delta if we had previousTimestamp.
+    // We can just add 1/15th of a second roughly, or just pass the timestamp from `now`.
+    let nextHoldTime = currentState.holdTime || 0;
+    if (config.isStatic && isInExercisePosture && (currentState.status === 'green' || currentState.status === 'yellow')) {
+       // Estimate based on FPS_LIMIT=20 (from WorkoutScreen.tsx)
+       nextHoldTime += 1 / 20; 
+    } else if (config.isStatic && !isInExercisePosture) {
+       // Optional: Reset hold time if they break posture, or keep accumulating total?
+       // Usually we want total hold time. We'll keep accumulating.
+    }
 
     const context: any = {
       ...angles,
@@ -564,7 +608,10 @@ export class ExerciseEngine {
       // 🔥 Adaptive tracking recovery
       visibilityBuffer: newVisibilityBuffer,
       trackingLostFrames: nextTrackingLostFrames,
-      lastValidAngles: nextLastValidAngles
+      lastValidAngles: nextLastValidAngles,
+
+      // 🔥 Static hold time tracking
+      holdTime: nextHoldTime
     };
   }
 }

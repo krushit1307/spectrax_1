@@ -1,10 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Award, Clock, RotateCcw, Video, Activity } from 'lucide-react';
 import { useWorkoutSync } from '../hooks/useWorkoutSync';
-import AIRecommendations from './AIRecommendations';
-import { generateRecommendations } from '../engine/recommendationEngine';
+import { updateWorkoutStreak } from "../utils/streakUtils";
 import { useAuth } from '../context/AuthContext';
-import { WorkoutRecord, getLocalWorkouts } from '../services/workoutSyncService';
+import { getLocalWorkouts, WorkoutRecord } from '../services/workoutSyncService';
 
 interface SummaryScreenProps {
   stats: { 
@@ -116,13 +115,7 @@ export const SummaryScreen: React.FC<SummaryScreenProps> = ({ stats, leveling, o
           stats.repScores.reduce((a, b) => a + b, 0) / stats.repScores.length,
         )
       : 0;
-  const recommendations = generateRecommendations(
-    stats.accuracy,
-    stats.mistakes,
-    stats.bestStreak,
-    averageRepScore,
-    stats.exerciseName
-  );
+  const streakData = updateWorkoutStreak();
 
   if (stats.totalReps === 0) {
     return (
@@ -665,7 +658,50 @@ export const SummaryScreen: React.FC<SummaryScreenProps> = ({ stats, leveling, o
           </div>
         </div>
       )}
-      <AIRecommendations recommendations={recommendations} />
+
+      <div
+        className="animate-in"
+        style={{
+          width: "100%",
+          maxWidth: "600px",
+          marginBottom: "24px",
+          padding: "20px",
+          borderRadius: "16px",
+          background: "rgba(255,255,255,0.04)",
+          border: "1px solid rgba(255,255,255,0.08)",
+          textAlign: "center",
+        }}
+      >
+        <h3
+          style={{
+            color: "#00e0ff",
+            marginBottom: "12px",
+            fontSize: "1.3rem",
+          }}
+        >
+          🔥 Workout Streak
+        </h3>
+
+        <p
+          style={{
+            color: "#ffffff",
+            fontSize: "1.1rem",
+            marginBottom: "8px",
+          }}
+        >
+          Current Streak: {streakData.currentStreak} days
+        </p>
+
+        <p
+          style={{
+            color: "#bbbbbb",
+            fontSize: "0.95rem",
+          }}
+        >
+          Longest Streak: {streakData.longestStreak} days
+        </p>
+      </div>
+      
       {/* Action Buttons */}
       <div
         className="animate-in"
